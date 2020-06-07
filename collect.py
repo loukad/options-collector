@@ -34,6 +34,9 @@ class OptionsCollector:
 
         self.api = 'https://api.tdameritrade.com/v1/marketdata/chains'
         self.api_key = os.getenv('APIKEY')
+        if self.api_key is None:
+            logger.critical('APIKEY env variable not set.')
+            sys.exit(1)
 
         self.email_user = os.getenv('EMAIL_USER', 'loukad@gmail.com')
         self.email_pwd = None
