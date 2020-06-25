@@ -76,7 +76,11 @@ class OptionsCollector:
                    'strategy': 'ANALYTICAL' }
 
         r = self.send_request(params)
-        if r['status'] != 'SUCCESS':
+        if r is None:
+            logger.error(f'Giving up on {symbol}')
+            return 0
+
+        if r.get('status', '') != 'SUCCESS':
             logger.error(f'Could not get option chain for: {symbol}')
             logger.error(str(r))
             return 0
