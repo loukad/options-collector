@@ -3219,6 +3219,7 @@ ofix
 oge
 ogi
 ogig
+ogn
 ogs
 ohi
 oi

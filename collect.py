@@ -16,7 +16,7 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 def expiration(exp_strike):
-    return exp_strike.split(':')[0].replace('-', '')
+    return int(exp_strike.split(':')[0].replace('-', ''))
 
 def options_iterator(raw):
     for maptype in ('putExpDateMap', 'callExpDateMap'):
