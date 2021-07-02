@@ -8,6 +8,10 @@ import getpass
 import schedule
 import requests
 import argparse
+
+import pandas as pd
+from os.path import join
+
 from datetime import datetime
 
 
@@ -28,8 +32,8 @@ def options_iterator(raw):
 
 
 class OptionsCollector:
-    def __init__(self, output_dir):
-        self.output_dir = output_dir
+    def __init__(self, dest):
+        self.dest = dest
         self.today = datetime.now().strftime('%Y-%m-%d')
 
         self.api = 'https://api.tdameritrade.com/v1/marketdata/chains'
@@ -38,7 +42,7 @@ class OptionsCollector:
             logger.critical('APIKEY env variable not set.')
             sys.exit(1)
 
-        self.email_user = os.getenv('EMAIL_USER', 'loukad@gmail.com')
+        self.email_user = os.getenv('EMAIL_USER')
         self.email_pwd = None
 
     def set_date(self, date):
@@ -79,7 +83,6 @@ class OptionsCollector:
         if r is None:
             logger.error(f'Giving up on {symbol}')
             return 0
-
         if r.get('status', '') != 'SUCCESS':
             logger.error(f'Could not get option chain for: {symbol}')
             logger.error(str(r))
@@ -88,25 +91,45 @@ class OptionsCollector:
         contracts = r['numberOfContracts']
         logger.info(f'Contracts: {contracts}')
 
-        fields = ('expirationDate', 'strikePrice', 'putCall', 'symbol', 
+        fields = ('expirationDate', 'strikePrice', 'putCall', 'symbol',
                   'bid', 'ask', 'last', 'totalVolume', 'openInterest',
                   'delta', 'gamma', 'theta', 'vega', 'rho',
                   'volatility', 'theoreticalVolatility', 'nonStandard')
         def to_list(ov):
             ov['putCall'] = 'p' if ov['putCall'] == 'PUT' else 'c'
             return [ov[x] for x in fields]
-        results = [to_list(opt) for opt in options_iterator(r)]
+        results = [[self.today] + to_list(opt) for opt in options_iterator(r)]
+
+        # Override the default data types
+        dtypes = {
+            'date': 'datetime64', 'expiration': 'int32', 'strike': 'int16',
+            'bid': 'float32', 'ask': 'float32', 'last': 'float32',
+            'volume': 'int32', 'openint': 'int32', 'delta': 'float32',
+            'gamma': 'float32', 'theta': 'float32', 'vega': 'float32',
+            'rho': 'float32', 'impvol': 'float32',
+            'theoretical_vol': 'float32', 'non_standard': bool,
+        }
+
+        # Prepare the destination
+        path = join(self.dest, symbol)
+        file = join(path, self.today + '.parquet')
+        pq_params = { 'compression': 'brotli' }
+        if not path.startswith('s3://'):
+            os.makedirs(path, exist_ok=True)
+        else:
+            endpoint_url = os.getenv('ENDPOINT_URL')
+            if endpoint_url is not None:
+                pq_params['storage_options'] = {
+                    'client_kwargs': {'endpoint_url': endpoint_url}
+                }
 
         # Save the option chain to a file
-        path = os.path.join(self.output_dir, self.today)
-        os.makedirs(path, exist_ok=True)
-        with open(os.path.join(path, symbol + '.csv'), 'w') as outfile:
-            outfile.write('Date,Expiration,Strike,Type,Symbol,Bid,Ask,')
-            outfile.write('Last,Volume,OpenInt,Delta,Gamma,Theta,Vega,Rho,')
-            outfile.write('ImpVol,TheoreticalVol,NonStandard\n')
-            for fields in results:
-                outfile.write(self.today + ',')
-                outfile.write(','.join(map(str, fields)) + '\n')
+        df = pd.DataFrame(results, columns=[
+            'date', 'expiration', 'strike', 'type', 'symbol', 'bid', 'ask',
+            'last', 'volume', 'openint', 'delta', 'gamma', 'theta', 'vega',
+            'rho', 'impvol', 'theoretical_vol', 'non_standard'
+        ])
+        df.astype(dtypes).set_index('date').to_parquet(file, **pq_params)
 
         if contracts != len(results):
             logger.warning(f'Expected {contracts} options, got {len(results)}')
@@ -130,7 +153,7 @@ class OptionsCollector:
                     yag.send(self.email_user, subject, [str(results)])
         except Exception as e:
             logger.warning(f'Could not send email: {e}')
-            
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group(required=True)
@@ -149,11 +172,11 @@ def main():
                         '(default is to wait until 9pm)')
     parser.add_argument('--due', default=21,
                         help='which hour (24-based) to collect each day')
-    parser.add_argument('--outputdir', default='.',
-                        help='the directory where to save the downloaded data')
+    parser.add_argument('--destination', default='.',
+                        help='directory or S3 URI where data should be saved')
     args = parser.parse_args()
 
-    tda = OptionsCollector(args.outputdir)
+    tda = OptionsCollector(args.destination)
 
     # Change the defaults based on command line options
     if args.date:
@@ -161,6 +184,9 @@ def main():
 
     # Get email credentials if email requested
     if args.email:
+        if tda.email_user is None:
+            logger.critical('EMAIL_USER is not set.')
+            sys.exit(1)
         tda.email_pwd = getpass.getpass('Gmail pass: ')
 
     # Do the required action
@@ -184,7 +210,7 @@ def main():
 
 def signal_handler(signal, frame):
     sys.exit(0)
-    
+
 if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal_handler)
     main()
