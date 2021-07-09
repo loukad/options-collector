@@ -4,3 +4,4 @@ schedule==0.6.0
 fastparquet==0.6.3
 pandas==1.2.4
 s3fs==2021.6.1
+tqdm==4.61.2

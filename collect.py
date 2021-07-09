@@ -1,13 +1,15 @@
 import os
+import s3fs
 import sys
 import time
 import signal
 import yagmail
 import logging
 import getpass
-import schedule
-import requests
 import argparse
+import requests
+import schedule
+import tempfile
 
 import pandas as pd
 from os.path import join
@@ -30,10 +32,43 @@ def options_iterator(raw):
                     x['expirationDate'] = expiration(exp_strike)
                     yield x
 
+def save_option_data(df, filename, s3_client=None):
+    if not filename.startswith('s3://'):
+        if (base_path := os.path.dirname(filename)):
+            os.makedirs(base_path, exist_ok=True)
+
+    dtypes = {
+        'date': 'datetime64', 'expiration': 'int32', 'strike': 'int16',
+        'bid': 'float32', 'ask': 'float32', 'last': 'float32',
+        'volume': 'int32', 'openint': 'int32', 'delta': 'float32',
+        'gamma': 'float32', 'theta': 'float32', 'vega': 'float32',
+        'rho': 'float32', 'impvol': 'float32',
+        'theoretical_vol': 'float32', 'non_standard': bool,
+    }
+
+    df = df.astype(dtypes).set_index('date')
+
+    pq_params = { 'compression': 'brotli' }
+    if s3_client is not None:
+        with s3_client.open(filename, 'wb') as f:
+            with tempfile.NamedTemporaryFile() as of:
+                df.to_parquet(of.name, **pq_params)
+                of.seek(0)
+                f.write(of.read())
+    else:
+        df.to_parquet(filename, **pq_params)
+
 
 class OptionsCollector:
+
     def __init__(self, dest):
         self.dest = dest
+        self.s3_client = None
+        if dest.startswith('s3://'):
+            self.s3_client = s3fs.S3FileSystem(client_kwargs={
+              'endpoint_url': os.getenv('ENDPOINT_URL')
+            })
+
         self.today = datetime.now().strftime('%Y-%m-%d')
 
         self.api = 'https://api.tdameritrade.com/v1/marketdata/chains'
@@ -100,36 +135,15 @@ class OptionsCollector:
             return [ov[x] for x in fields]
         results = [[self.today] + to_list(opt) for opt in options_iterator(r)]
 
-        # Override the default data types
-        dtypes = {
-            'date': 'datetime64', 'expiration': 'int32', 'strike': 'int16',
-            'bid': 'float32', 'ask': 'float32', 'last': 'float32',
-            'volume': 'int32', 'openint': 'int32', 'delta': 'float32',
-            'gamma': 'float32', 'theta': 'float32', 'vega': 'float32',
-            'rho': 'float32', 'impvol': 'float32',
-            'theoretical_vol': 'float32', 'non_standard': bool,
-        }
-
-        # Prepare the destination
-        path = join(self.dest, symbol)
-        file = join(path, self.today + '.parquet')
-        pq_params = { 'compression': 'brotli' }
-        if not path.startswith('s3://'):
-            os.makedirs(path, exist_ok=True)
-        else:
-            endpoint_url = os.getenv('ENDPOINT_URL')
-            if endpoint_url is not None:
-                pq_params['storage_options'] = {
-                    'client_kwargs': {'endpoint_url': endpoint_url}
-                }
-
         # Save the option chain to a file
         df = pd.DataFrame(results, columns=[
             'date', 'expiration', 'strike', 'type', 'symbol', 'bid', 'ask',
             'last', 'volume', 'openint', 'delta', 'gamma', 'theta', 'vega',
             'rho', 'impvol', 'theoretical_vol', 'non_standard'
         ])
-        df.astype(dtypes).set_index('date').to_parquet(file, **pq_params)
+
+        dest_file = join(self.dest, symbol, self.today + '.parquet')
+        save_option_data(df, dest_file, s3_client=self.s3_client)
 
         if contracts != len(results):
             logger.warning(f'Expected {contracts} options, got {len(results)}')
