@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import s3fs
 import glob
 import signal
@@ -8,7 +9,7 @@ import argparse
 
 from tqdm.auto import tqdm
 from contextlib import closing
-from multiprocessing import Pool
+from multiprocessing import get_context
 
 import pandas as pd
 from os.path import join, basename, expanduser
@@ -64,7 +65,7 @@ def main():
     work_items = [(f, args.dest, s3_client) for f in files]
     processes = min(args.parallelism, len(work_items))
 
-    with closing(Pool(processes)) as p:
+    with closing(get_context('spawn').Pool(processes)) as p:
         status = {'desc': 'Processing', 'total': len(files)}
         _ = list(tqdm(p.imap(convert, work_items), **status))
 
