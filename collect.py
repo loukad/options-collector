@@ -117,7 +117,7 @@ class OptionsCollector:
             if df is None:
                 return 0
         except Exception as e:
-            logger.error(f'Error processing {symbol}', e)
+            logger.exception(f'Error processing {symbol}: %s', e)
             return 0
     
         df['date'] = self.today
